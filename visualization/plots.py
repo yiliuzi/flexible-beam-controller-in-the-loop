@@ -530,3 +530,121 @@ def plot_observer_pid_comparison(
 
     figure.savefig(destination, dpi=180)
     plt.close(figure)
+
+
+def plot_actuator_pid_comparison(
+    open_loop_result: SimulationResult,
+    ideal_actuator_result: SimulationResult,
+    nonideal_actuator_result: SimulationResult,
+    requested_force: NDArray[np.float64],
+    actuator_saturated: NDArray[np.bool_],
+    output_path: str | Path,
+) -> None:
+    """绘制理想执行器与非理想音圈执行器的闭环对比。"""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    force_tracking_error = requested_force - nonideal_actuator_result.control_force
+
+    figure, axes = plt.subplots(
+        nrows=4,
+        ncols=1,
+        figsize=(12, 12),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        open_loop_result.time,
+        open_loop_result.displacement * 1000.0,
+        color="#DC2626",
+        linewidth=1.1,
+        label="Without control",
+    )
+
+    axes[0].plot(
+        ideal_actuator_result.time,
+        ideal_actuator_result.displacement * 1000.0,
+        color="#2563EB",
+        linewidth=1.3,
+        label="Ideal actuator",
+    )
+
+    axes[0].plot(
+        nonideal_actuator_result.time,
+        nonideal_actuator_result.displacement * 1000.0,
+        color="#16A34A",
+        linewidth=1.3,
+        label="Nonideal voice-coil actuator",
+    )
+
+    axes[0].set_ylabel("Displacement (mm)")
+    axes[0].set_title("Observer PID with Ideal and Nonideal Actuator")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        nonideal_actuator_result.time,
+        requested_force,
+        color="#F97316",
+        linewidth=1.1,
+        label="PID requested force",
+    )
+
+    axes[1].plot(
+        nonideal_actuator_result.time,
+        nonideal_actuator_result.control_force,
+        color="#16A34A",
+        linewidth=1.3,
+        label="Actuator applied force",
+    )
+
+    axes[1].plot(
+        nonideal_actuator_result.time,
+        nonideal_actuator_result.disturbance_force,
+        color="#9333EA",
+        linewidth=1.0,
+        label="External disturbance",
+    )
+
+    axes[1].set_ylabel("Force (N)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    axes[2].plot(
+        nonideal_actuator_result.time,
+        force_tracking_error,
+        color="#DC2626",
+        linewidth=1.1,
+        label="Force tracking error",
+    )
+
+    axes[2].axhline(
+        0.0,
+        color="#64748B",
+        linewidth=0.8,
+    )
+
+    axes[2].set_ylabel("Force error (N)")
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    axes[3].step(
+        nonideal_actuator_result.time,
+        actuator_saturated.astype(float),
+        where="post",
+        color="#B91C1C",
+        linewidth=1.2,
+        label="Actuator saturation",
+    )
+
+    axes[3].set_xlabel("Time (s)")
+    axes[3].set_ylabel("Saturation")
+    axes[3].set_yticks([0.0, 1.0])
+    axes[3].set_yticklabels(["Inactive", "Active"])
+    axes[3].grid(alpha=0.25)
+    axes[3].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
