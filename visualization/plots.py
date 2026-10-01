@@ -648,3 +648,121 @@ def plot_actuator_pid_comparison(
 
     figure.savefig(destination, dpi=180)
     plt.close(figure)
+
+
+def plot_embedded_timing_comparison(
+    fast_result: SimulationResult,
+    embedded_result: SimulationResult,
+    missed_deadline_result: SimulationResult,
+    embedded_requested_force: NDArray[np.float64],
+    embedded_task_executed: NDArray[np.bool_],
+    output_path: str | Path,
+) -> None:
+    """绘制不同控制周期和计算延迟下的闭环响应。"""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    figure, axes = plt.subplots(
+        nrows=4,
+        ncols=1,
+        figsize=(12, 12),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        fast_result.time,
+        fast_result.displacement * 1000.0,
+        color="#2563EB",
+        linewidth=1.2,
+        label="1 ms period, no delay",
+    )
+
+    axes[0].plot(
+        embedded_result.time,
+        embedded_result.displacement * 1000.0,
+        color="#16A34A",
+        linewidth=1.3,
+        label="5 ms period, 2 ms delay",
+    )
+
+    axes[0].plot(
+        missed_deadline_result.time,
+        missed_deadline_result.displacement * 1000.0,
+        color="#DC2626",
+        linewidth=1.1,
+        label="5 ms period, 6 ms delay",
+    )
+
+    axes[0].set_ylabel("Displacement (mm)")
+    axes[0].set_title("Embedded Control Period and Computation Delay")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        fast_result.time,
+        fast_result.control_force,
+        color="#2563EB",
+        linewidth=1.0,
+        label="Fast-loop applied force",
+    )
+
+    axes[1].plot(
+        embedded_result.time,
+        embedded_result.control_force,
+        color="#16A34A",
+        linewidth=1.2,
+        label="Embedded-loop applied force",
+    )
+
+    axes[1].plot(
+        missed_deadline_result.time,
+        missed_deadline_result.control_force,
+        color="#DC2626",
+        linewidth=1.0,
+        label="Missed-deadline applied force",
+    )
+
+    axes[1].set_ylabel("Applied force (N)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    axes[2].plot(
+        embedded_result.time,
+        embedded_requested_force,
+        color="#F97316",
+        linewidth=1.0,
+        label="Embedded PID command",
+    )
+
+    axes[2].plot(
+        embedded_result.time,
+        embedded_result.control_force,
+        color="#16A34A",
+        linewidth=1.2,
+        label="Actuator force",
+    )
+
+    axes[2].set_ylabel("Force (N)")
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    axes[3].step(
+        embedded_result.time,
+        embedded_task_executed.astype(float),
+        where="post",
+        color="#7C3AED",
+        linewidth=1.0,
+        label="Control task executed",
+    )
+
+    axes[3].set_xlabel("Time (s)")
+    axes[3].set_ylabel("Task state")
+    axes[3].set_yticks([0.0, 1.0])
+    axes[3].set_yticklabels(["Idle", "Executed"])
+    axes[3].grid(alpha=0.25)
+    axes[3].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
