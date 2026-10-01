@@ -311,3 +311,109 @@ def plot_imu_processing_comparison(
 
     figure.savefig(destination, dpi=180)
     plt.close(figure)
+
+
+def plot_state_observer_validation(
+    time: NDArray[np.float64],
+    true_displacement: NDArray[np.float64],
+    estimated_displacement: NDArray[np.float64],
+    true_velocity: NDArray[np.float64],
+    estimated_velocity: NDArray[np.float64],
+    valid_measurements: NDArray[np.bool_],
+    output_path: str | Path,
+) -> None:
+    """绘制状态观测器估计结果。"""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    displacement_error = estimated_displacement - true_displacement
+
+    velocity_error = estimated_velocity - true_velocity
+
+    figure, axes = plt.subplots(
+        nrows=3,
+        ncols=1,
+        figsize=(12, 10),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        time,
+        true_displacement * 1000.0,
+        color="#1D4ED8",
+        linewidth=1.5,
+        label="True displacement",
+    )
+
+    axes[0].plot(
+        time,
+        estimated_displacement * 1000.0,
+        color="#F97316",
+        linewidth=1.1,
+        linestyle="--",
+        label="Estimated displacement",
+    )
+
+    axes[0].set_ylabel("Displacement (mm)")
+    axes[0].set_title("Luenberger Observer Validation")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        time,
+        true_velocity,
+        color="#16A34A",
+        linewidth=1.5,
+        label="True velocity",
+    )
+
+    axes[1].plot(
+        time,
+        estimated_velocity,
+        color="#7C3AED",
+        linewidth=1.1,
+        linestyle="--",
+        label="Estimated velocity",
+    )
+
+    axes[1].set_ylabel("Velocity (m/s)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    axes[2].plot(
+        time,
+        displacement_error * 1000.0,
+        color="#DC2626",
+        linewidth=1.0,
+        label="Displacement error",
+    )
+
+    axes[2].plot(
+        time,
+        velocity_error,
+        color="#0891B2",
+        linewidth=1.0,
+        label="Velocity error",
+    )
+
+    invalid_indices = ~valid_measurements
+
+    if np.any(invalid_indices):
+        axes[2].scatter(
+            time[invalid_indices],
+            np.zeros(np.count_nonzero(invalid_indices)),
+            color="#111827",
+            marker="x",
+            s=16,
+            label="Dropped measurement",
+        )
+
+    axes[2].set_xlabel("Time (s)")
+    axes[2].set_ylabel("Estimation error")
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
