@@ -198,3 +198,116 @@ def plot_imu_measurement_comparison(
 
     figure.savefig(destination, dpi=180)
     plt.close(figure)
+
+
+def plot_imu_processing_comparison(
+    time: NDArray[np.float64],
+    true_acceleration: NDArray[np.float64],
+    raw_acceleration: NDArray[np.float64],
+    processed_acceleration: NDArray[np.float64],
+    valid_samples: NDArray[np.bool_],
+    sensor_faults: NDArray[np.bool_],
+    output_path: str | Path,
+) -> None:
+    """绘制IMU原始测量与预处理结果。"""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    raw_error = raw_acceleration - true_acceleration
+    processed_error = processed_acceleration - true_acceleration
+
+    figure, axes = plt.subplots(
+        nrows=3,
+        ncols=1,
+        figsize=(12, 10),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        time,
+        true_acceleration,
+        color="#1D4ED8",
+        linewidth=1.5,
+        label="True acceleration",
+    )
+
+    axes[0].plot(
+        time,
+        raw_acceleration,
+        color="#F97316",
+        linewidth=0.8,
+        alpha=0.55,
+        label="Raw IMU",
+    )
+
+    axes[0].plot(
+        time,
+        processed_acceleration,
+        color="#16A34A",
+        linewidth=1.2,
+        label="Processed IMU",
+    )
+
+    axes[0].set_ylabel("Acceleration (m/s²)")
+    axes[0].set_title("Virtual IMU Processing and Fault Detection")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        time,
+        raw_error,
+        color="#F97316",
+        linewidth=0.8,
+        alpha=0.7,
+        label="Raw measurement error",
+    )
+
+    axes[1].plot(
+        time,
+        processed_error,
+        color="#7C3AED",
+        linewidth=1.0,
+        label="Processed measurement error",
+    )
+
+    axes[1].axhline(
+        0.0,
+        color="#64748B",
+        linewidth=0.8,
+    )
+
+    axes[1].set_ylabel("Error (m/s²)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    invalid_samples = ~valid_samples
+
+    axes[2].step(
+        time,
+        invalid_samples.astype(float),
+        where="post",
+        color="#DC2626",
+        linewidth=1.2,
+        label="Invalid input",
+    )
+
+    axes[2].step(
+        time,
+        sensor_faults.astype(float),
+        where="post",
+        color="#7C3AED",
+        linewidth=1.5,
+        label="Sensor fault",
+    )
+
+    axes[2].set_xlabel("Time (s)")
+    axes[2].set_ylabel("Fault state")
+    axes[2].set_yticks([0.0, 1.0])
+    axes[2].set_yticklabels(["Normal", "Active"])
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
