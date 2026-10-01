@@ -417,3 +417,116 @@ def plot_state_observer_validation(
 
     figure.savefig(destination, dpi=180)
     plt.close(figure)
+
+
+def plot_observer_pid_comparison(
+    open_loop_result: SimulationResult,
+    ideal_pid_result: SimulationResult,
+    observer_pid_result: SimulationResult,
+    estimated_displacement: NDArray[np.float64],
+    estimated_velocity: NDArray[np.float64],
+    output_path: str | Path,
+) -> None:
+    """绘制无控制、理想PID及观测器PID对比。"""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    figure, axes = plt.subplots(
+        nrows=3,
+        ncols=1,
+        figsize=(12, 10),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        open_loop_result.time,
+        open_loop_result.displacement * 1000.0,
+        color="#DC2626",
+        linewidth=1.2,
+        label="Without control",
+    )
+
+    axes[0].plot(
+        ideal_pid_result.time,
+        ideal_pid_result.displacement * 1000.0,
+        color="#2563EB",
+        linewidth=1.3,
+        label="Ideal-state PID",
+    )
+
+    axes[0].plot(
+        observer_pid_result.time,
+        observer_pid_result.displacement * 1000.0,
+        color="#16A34A",
+        linewidth=1.3,
+        label="Observer-based PID",
+    )
+
+    axes[0].set_ylabel("Displacement (mm)")
+    axes[0].set_title("Ideal-State and Observer-Based PID Comparison")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        observer_pid_result.time,
+        observer_pid_result.displacement * 1000.0,
+        color="#1D4ED8",
+        linewidth=1.4,
+        label="True displacement",
+    )
+
+    axes[1].plot(
+        observer_pid_result.time,
+        estimated_displacement * 1000.0,
+        color="#F97316",
+        linewidth=1.1,
+        linestyle="--",
+        label="Estimated displacement",
+    )
+
+    axes[1].plot(
+        observer_pid_result.time,
+        estimated_velocity,
+        color="#7C3AED",
+        linewidth=0.9,
+        alpha=0.8,
+        label="Estimated velocity",
+    )
+
+    axes[1].set_ylabel("Estimated state")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    axes[2].plot(
+        ideal_pid_result.time,
+        ideal_pid_result.control_force,
+        color="#2563EB",
+        linewidth=1.2,
+        label="Ideal PID force",
+    )
+
+    axes[2].plot(
+        observer_pid_result.time,
+        observer_pid_result.control_force,
+        color="#16A34A",
+        linewidth=1.2,
+        label="Observer PID force",
+    )
+
+    axes[2].plot(
+        observer_pid_result.time,
+        observer_pid_result.disturbance_force,
+        color="#9333EA",
+        linewidth=1.0,
+        label="External disturbance",
+    )
+
+    axes[2].set_xlabel("Time (s)")
+    axes[2].set_ylabel("Force (N)")
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
