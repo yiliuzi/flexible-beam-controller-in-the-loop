@@ -7,10 +7,11 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from plant.beam_sdof import SingleDegreeBeam
+from plant.beam_sdof import BeamState, SingleDegreeBeam
 from simulation.config import SimulationConfig
 
 DisturbanceFunction = Callable[[float], float]
+ControllerFunction = Callable[[float, BeamState], float]
 
 
 @dataclass(slots=True)
@@ -21,6 +22,7 @@ class SimulationResult:
     displacement: NDArray[np.float64]
     velocity: NDArray[np.float64]
     acceleration: NDArray[np.float64]
+    control_force: NDArray[np.float64]
     disturbance_force: NDArray[np.float64]
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -32,17 +34,19 @@ class SimulationResult:
                 "displacement_m": self.displacement,
                 "velocity_m_s": self.velocity,
                 "acceleration_m_s2": self.acceleration,
+                "control_force_n": self.control_force,
                 "disturbance_force_n": self.disturbance_force,
             }
         )
 
 
-def run_open_loop_simulation(
+def run_simulation(
     beam: SingleDegreeBeam,
     config: SimulationConfig,
     disturbance: DisturbanceFunction | None = None,
+    controller: ControllerFunction | None = None,
 ) -> SimulationResult:
-    """运行无控制器的柔性梁开环仿真。"""
+    """运行固定步长柔性梁仿真。"""
 
     sample_count = int(round(config.duration / config.time_step)) + 1
 
@@ -50,19 +54,32 @@ def run_open_loop_simulation(
     displacement_values = np.zeros(sample_count, dtype=np.float64)
     velocity_values = np.zeros(sample_count, dtype=np.float64)
     acceleration_values = np.zeros(sample_count, dtype=np.float64)
+    control_values = np.zeros(sample_count, dtype=np.float64)
     disturbance_values = np.zeros(sample_count, dtype=np.float64)
 
     for sample_index, current_time in enumerate(time_values):
-        disturbance_force = disturbance(float(current_time)) if disturbance else 0.0
+        state = BeamState(
+            displacement=beam.state.displacement,
+            velocity=beam.state.velocity,
+        )
 
-        displacement_values[sample_index] = beam.state.displacement
-        velocity_values[sample_index] = beam.state.velocity
+        disturbance_force = disturbance(float(current_time)) if disturbance else 0.0
+        control_force = controller(float(current_time), state) if controller else 0.0
+
+        displacement_values[sample_index] = state.displacement
+        velocity_values[sample_index] = state.velocity
+        control_values[sample_index] = control_force
         disturbance_values[sample_index] = disturbance_force
-        acceleration_values[sample_index] = beam.acceleration(disturbance_force=disturbance_force)
+        acceleration_values[sample_index] = beam.acceleration(
+            state=state,
+            control_force=control_force,
+            disturbance_force=disturbance_force,
+        )
 
         if sample_index < sample_count - 1:
             beam.step(
                 time_step=config.time_step,
+                control_force=control_force,
                 disturbance_force=disturbance_force,
             )
 
@@ -71,5 +88,21 @@ def run_open_loop_simulation(
         displacement=displacement_values,
         velocity=velocity_values,
         acceleration=acceleration_values,
+        control_force=control_values,
         disturbance_force=disturbance_values,
+    )
+
+
+def run_open_loop_simulation(
+    beam: SingleDegreeBeam,
+    config: SimulationConfig,
+    disturbance: DisturbanceFunction | None = None,
+) -> SimulationResult:
+    """运行无控制器的开环仿真。"""
+
+    return run_simulation(
+        beam=beam,
+        config=config,
+        disturbance=disturbance,
+        controller=None,
     )

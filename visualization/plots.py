@@ -51,3 +51,69 @@ def plot_free_vibration_response(
 
     figure.savefig(destination, dpi=180)
     plt.close(figure)
+
+
+def plot_pid_comparison(
+    open_loop_result: SimulationResult,
+    controlled_result: SimulationResult,
+    output_path: str | Path,
+) -> None:
+    """绘制无控制与PID控制的响应对比。"""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    figure, axes = plt.subplots(
+        nrows=3,
+        ncols=1,
+        figsize=(11, 9),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        open_loop_result.time,
+        open_loop_result.displacement * 1000.0,
+        color="#DC2626",
+        linewidth=1.4,
+        label="Without control",
+    )
+
+    axes[0].plot(
+        controlled_result.time,
+        controlled_result.displacement * 1000.0,
+        color="#2563EB",
+        linewidth=1.4,
+        label="PID control",
+    )
+
+    axes[0].set_ylabel("Displacement (mm)")
+    axes[0].set_title("Flexible Beam Vibration Control Comparison")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        controlled_result.time,
+        controlled_result.control_force,
+        color="#16A34A",
+        linewidth=1.2,
+        label="PID control force",
+    )
+    axes[1].set_ylabel("Control force (N)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    axes[2].plot(
+        controlled_result.time,
+        controlled_result.disturbance_force,
+        color="#9333EA",
+        linewidth=1.2,
+        label="External disturbance",
+    )
+    axes[2].set_xlabel("Time (s)")
+    axes[2].set_ylabel("Disturbance (N)")
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
