@@ -3,6 +3,8 @@
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
+from numpy.typing import NDArray
 
 from simulation.runner import SimulationResult
 
@@ -114,6 +116,85 @@ def plot_pid_comparison(
     axes[2].set_ylabel("Disturbance (N)")
     axes[2].grid(alpha=0.25)
     axes[2].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
+
+
+def plot_imu_measurement_comparison(
+    time: NDArray[np.float64],
+    true_acceleration: NDArray[np.float64],
+    measured_acceleration: NDArray[np.float64],
+    valid_samples: NDArray[np.bool_],
+    output_path: str | Path,
+) -> None:
+    """绘制真实加速度与虚拟IMU测量值对比。"""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    measurement_error = measured_acceleration - true_acceleration
+
+    figure, axes = plt.subplots(
+        nrows=2,
+        ncols=1,
+        figsize=(11, 7),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        time,
+        true_acceleration,
+        color="#1D4ED8",
+        linewidth=1.4,
+        label="True acceleration",
+    )
+
+    axes[0].plot(
+        time,
+        measured_acceleration,
+        color="#F97316",
+        linewidth=0.9,
+        alpha=0.75,
+        label="Virtual IMU measurement",
+    )
+
+    invalid_indices = ~valid_samples
+
+    if np.any(invalid_indices):
+        axes[0].scatter(
+            time[invalid_indices],
+            measured_acceleration[invalid_indices],
+            color="#DC2626",
+            marker="x",
+            s=18,
+            label="Dropped sample",
+        )
+
+    axes[0].set_ylabel("Acceleration (m/s²)")
+    axes[0].set_title("Virtual IMU Measurement Validation")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        time,
+        measurement_error,
+        color="#7C3AED",
+        linewidth=0.9,
+        label="Measurement error",
+    )
+
+    axes[1].axhline(
+        0.0,
+        color="#64748B",
+        linewidth=0.8,
+    )
+
+    axes[1].set_xlabel("Time (s)")
+    axes[1].set_ylabel("Error (m/s²)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
 
     figure.savefig(destination, dpi=180)
     plt.close(figure)
