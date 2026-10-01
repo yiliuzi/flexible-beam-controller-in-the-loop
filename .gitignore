@@ -1,0 +1,37 @@
+# Python virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# PyCharm
+.idea/
+
+# C/C++ build files
+build/
+*.dll
+*.exe
+*.o
+*.obj
+*.a
+*.lib
+
+# Generated experimental data
+data/*.csv
+data/*.npy
+results/*.csv
+results/*.png
+results/*.pdf
+
+# Keep directories in Git
+!data/.gitkeep
+!results/.gitkeep
+
+# Operating system
+.DS_Store
+Thumbs.db
