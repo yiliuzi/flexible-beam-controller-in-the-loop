@@ -766,3 +766,219 @@ def plot_embedded_timing_comparison(
 
     figure.savefig(destination, dpi=180)
     plt.close(figure)
+
+
+def plot_can_fault_comparison(
+    healthy_result: SimulationResult,
+    faulty_result: SimulationResult,
+    healthy_requested_force: NDArray[np.float64],
+    faulty_requested_force: NDArray[np.float64],
+    faulty_bus_connected: NDArray[np.bool_],
+    faulty_timeout: NDArray[np.bool_],
+    faulty_valid_frame: NDArray[np.bool_],
+    output_path: str | Path,
+) -> None:
+    """绘制健康CAN与故障CAN闭环响应对比。"""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    figure, axes = plt.subplots(
+        nrows=4,
+        ncols=1,
+        figsize=(12, 12),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        healthy_result.time,
+        healthy_result.displacement * 1000.0,
+        color="#2563EB",
+        linewidth=1.3,
+        label="Healthy CAN",
+    )
+
+    axes[0].plot(
+        faulty_result.time,
+        faulty_result.displacement * 1000.0,
+        color="#DC2626",
+        linewidth=1.2,
+        label="Faulty CAN",
+    )
+
+    axes[0].set_ylabel("Displacement (mm)")
+    axes[0].set_title("CAN Communication Fault Control Comparison")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        healthy_result.time,
+        healthy_requested_force,
+        color="#2563EB",
+        linewidth=1.0,
+        alpha=0.8,
+        label="Healthy requested force",
+    )
+
+    axes[1].plot(
+        faulty_result.time,
+        faulty_requested_force,
+        color="#F97316",
+        linewidth=1.0,
+        alpha=0.8,
+        label="Faulty requested force",
+    )
+
+    axes[1].plot(
+        faulty_result.time,
+        faulty_result.control_force,
+        color="#16A34A",
+        linewidth=1.2,
+        label="Faulty CAN applied force",
+    )
+
+    axes[1].set_ylabel("Force (N)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    axes[2].step(
+        faulty_result.time,
+        faulty_bus_connected.astype(float),
+        where="post",
+        color="#16A34A",
+        linewidth=1.2,
+        label="CAN connected",
+    )
+
+    axes[2].step(
+        faulty_result.time,
+        faulty_timeout.astype(float),
+        where="post",
+        color="#DC2626",
+        linewidth=1.2,
+        label="Communication timeout",
+    )
+
+    axes[2].set_ylabel("Network state")
+    axes[2].set_yticks([0.0, 1.0])
+    axes[2].set_yticklabels(["Inactive", "Active"])
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    axes[3].step(
+        faulty_result.time,
+        faulty_valid_frame.astype(float),
+        where="post",
+        color="#7C3AED",
+        linewidth=1.0,
+        label="Valid CAN frame received",
+    )
+
+    axes[3].set_xlabel("Time (s)")
+    axes[3].set_ylabel("Frame received")
+    axes[3].set_yticks([0.0, 1.0])
+    axes[3].set_yticklabels(["No", "Yes"])
+    axes[3].grid(alpha=0.25)
+    axes[3].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
+
+
+def plot_safety_state_timeline(
+    time: NDArray[np.float64],
+    safety_state: NDArray[np.str_],
+    force_scale: NDArray[np.float64],
+    communication_timeout: NDArray[np.bool_],
+    bus_connected: NDArray[np.bool_],
+    output_path: str | Path,
+) -> None:
+    """绘制通信故障下的安全状态切换过程。"""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    state_code = np.zeros(
+        len(safety_state),
+        dtype=np.float64,
+    )
+
+    state_code[safety_state == "SAFE_STOP"] = 0.0
+    state_code[safety_state == "RECOVERY"] = 1.0
+    state_code[safety_state == "DEGRADED"] = 2.0
+    state_code[safety_state == "NORMAL"] = 3.0
+
+    figure, axes = plt.subplots(
+        nrows=3,
+        ncols=1,
+        figsize=(12, 9),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].step(
+        time,
+        state_code,
+        where="post",
+        color="#2563EB",
+        linewidth=1.4,
+        label="Safety state",
+    )
+
+    axes[0].set_ylabel("System state")
+    axes[0].set_yticks([0.0, 1.0, 2.0, 3.0])
+    axes[0].set_yticklabels(
+        [
+            "Safe stop",
+            "Recovery",
+            "Degraded",
+            "Normal",
+        ]
+    )
+    axes[0].set_title("Fault-Tolerant Safety State Transitions")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].step(
+        time,
+        force_scale,
+        where="post",
+        color="#F97316",
+        linewidth=1.3,
+        label="Allowed control-force scale",
+    )
+
+    axes[1].set_ylabel("Force scale")
+    axes[1].set_ylim(-0.05, 1.05)
+    axes[1].set_yticks([0.0, 0.25, 0.50, 1.0])
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    axes[2].step(
+        time,
+        bus_connected.astype(float),
+        where="post",
+        color="#16A34A",
+        linewidth=1.2,
+        label="CAN connected",
+    )
+
+    axes[2].step(
+        time,
+        communication_timeout.astype(float),
+        where="post",
+        color="#DC2626",
+        linewidth=1.2,
+        label="Communication timeout",
+    )
+
+    axes[2].set_xlabel("Time (s)")
+    axes[2].set_ylabel("Diagnostic state")
+    axes[2].set_yticks([0.0, 1.0])
+    axes[2].set_yticklabels(["Inactive", "Active"])
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)

@@ -1,0 +1,1259 @@
+"""传感器、状态观测器和PID完整闭环实验�?""
+
+from collections.abc import Callable
+from pathlib import Path
+
+import numpy as np
+
+from controllers.pid import PIDController, PIDParameters
+from controllers.state_observer import (
+    LuenbergerObserver,
+    ObserverParameters,
+)
+from plant.beam_sdof import (
+    BeamParameters,
+    BeamState,
+    SingleDegreeBeam,
+)
+from plant.disturbances import impulse_disturbance
+from sensors.virtual_displacement_sensor import (
+    DisplacementSensorParameters,
+    VirtualDisplacementSensor,
+)
+from simulation.config import SimulationConfig
+from simulation.runner import SimulationResult, run_simulation
+from visualization.plots import plot_observer_pid_comparison
+
+DisturbanceFunction = Callable[[float], float]
+
+
+def calculate_rms(values: np.ndarray) -> float:
+    """计算信号均方根�?""
+
+    return float(np.sqrt(np.mean(np.square(values))))
+
+
+def estimate_sensor_bias(
+    sensor: VirtualDisplacementSensor,
+    sample_count: int = 1000,
+) -> float:
+    """使用静止样本估计位移传感器零偏�?""
+
+    calibration_values: list[float] = []
+    timestamp = 0.0
+
+    while len(calibration_values) < sample_count:
+        measurement = sensor.read(
+            true_displacement=0.0,
+            timestamp=timestamp,
+        )
+
+        if measurement.valid and not measurement.saturated:
+            calibration_values.append(measurement.displacement)
+
+        timestamp += 0.001
+
+    return float(np.mean(calibration_values))
+
+
+def run_observer_pid_simulation(
+    beam_parameters: BeamParameters,
+    config: SimulationConfig,
+    disturbance: DisturbanceFunction,
+) -> tuple[
+    SimulationResult,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    float,
+]:
+    """运行基于传感器和状态观测器的PID闭环�?""
+
+    beam = SingleDegreeBeam(
+        parameters=beam_parameters,
+    )
+
+    sensor = VirtualDisplacementSensor(
+        DisplacementSensorParameters(
+            measurement_range=0.10,
+            resolution_bits=16,
+            noise_standard_deviation=0.00005,
+            constant_bias=0.00020,
+            dropout_probability=0.005,
+            seed=2027,
+        )
+    )
+
+    estimated_sensor_bias = estimate_sensor_bias(sensor)
+
+    observer = LuenbergerObserver(
+        ObserverParameters(
+            mass=beam_parameters.mass,
+            damping=beam_parameters.damping,
+            stiffness=beam_parameters.stiffness,
+            position_gain=58.5,
+            velocity_gain=562.25,
+        )
+    )
+
+    controller = PIDController(
+        PIDParameters(
+            proportional_gain=35.0,
+            integral_gain=0.0,
+            derivative_gain=1.2,
+            output_minimum=-5.0,
+            output_maximum=5.0,
+            integral_minimum=-0.5,
+            integral_maximum=0.5,
+        )
+    )
+
+    sample_count = int(round(config.duration / config.time_step)) + 1
+
+    time_values = np.arange(sample_count, dtype=np.float64) * config.time_step
+
+    displacement_values = np.zeros(
+        sample_count,
+        dtype=np.float64,
+    )
+
+    velocity_values = np.zeros(
+        sample_count,
+        dtype=np.float64,
+    )
+
+    acceleration_values = np.zeros(
+        sample_count,
+        dtype=np.float64,
+    )
+
+    control_values = np.zeros(
+        sample_count,
+        dtype=np.float64,
+    )
+
+    disturbance_values = np.zeros(
+        sample_count,
+        dtype=np.float64,
+    )
+
+    estimated_displacement = np.zeros(
+        sample_count,
+        dtype=np.float64,
+    )
+
+    estimated_velocity = np.zeros(
+        sample_count,
+        dtype=np.float64,
+    )
+
+    valid_measurements = np.zeros(
+        sample_count,
+        dtype=np.bool_,
+    )
+
+    previously_applied_control = 0.0
+
+    for sample_index, current_time in enumerate(time_values):
+        disturbance_force = disturbance(float(current_time))
+
+        measurement = sensor.read(
+            true_displacement=beam.state.displacement,
+            timestamp=float(current_time),
+        )
+
+        corrected_displacement = measurement.displacement - estimated_sensor_bias
+
+        observer_state = observer.update(
+            measured_displacement=corrected_displacement,
+            applied_control_force=previously_applied_control,
+            time_step=config.time_step,
+            measurement_valid=measurement.valid,
+        )
+
+        control_force = controller.update(
+            reference=0.0,
+            measurement=observer_state.displacement,
+            time_step=config.time_step,
+        )
+
+        displacement_values[sample_index] = beam.state.displacement
+
+        velocity_values[sample_index] = beam.state.velocity
+
+        acceleration_values[sample_index] = beam.acceleration(
+            control_force=control_force,
+            disturbance_force=disturbance_force,
+        )
+
+        control_values[sample_index] = control_force
+        disturbance_values[sample_index] = disturbance_force
+
+        estimated_displacement[sample_index] = observer_state.displacement
+
+        estimated_velocity[sample_index] = observer_state.velocity
+
+        valid_measurements[sample_index] = measurement.valid
+
+        if sample_index < sample_count - 1:
+            beam.step(
+                time_step=config.time_step,
+                control_force=control_force,
+                disturbance_force=disturbance_force,
+            )
+
+        previously_applied_control = control_force
+
+    result = SimulationResult(
+        time=time_values,
+        displacement=displacement_values,
+        velocity=velocity_values,
+        acceleration=acceleration_values,
+        control_force=control_values,
+        disturbance_force=disturbance_values,
+    )
+
+    return (
+        result,
+        estimated_displacement,
+        estimated_velocity,
+        valid_measurements,
+        estimated_sensor_bias,
+    )
+
+
+def main() -> None:
+    """运行三种控制模式的公平对比实验�?""
+
+    project_root = Path(__file__).resolve().parents[1]
+
+    open_loop_data_path = project_root / "data" / "observer_comparison_open_loop.csv"
+
+    ideal_pid_data_path = project_root / "data" / "observer_comparison_ideal_pid.csv"
+
+    observer_pid_data_path = project_root / "data" / "observer_pid_control_response.csv"
+
+    figure_path = project_root / "results" / "observer_pid_control_comparison.png"
+
+    config = SimulationConfig(
+        time_step=0.001,
+        duration=5.0,
+    )
+
+    beam_parameters = BeamParameters(
+        mass=0.08,
+        damping=0.12,
+        stiffness=18.0,
+    )
+
+    def disturbance(current_time: float) -> float:
+        return impulse_disturbance(
+            time=current_time,
+            start_time=0.50,
+            duration=0.05,
+            amplitude=1.50,
+        )
+
+    open_loop_result = run_simulation(
+        beam=SingleDegreeBeam(
+            parameters=beam_parameters,
+        ),
+        config=config,
+        disturbance=disturbance,
+    )
+
+    ideal_controller = PIDController(
+        PIDParameters(
+            proportional_gain=35.0,
+            integral_gain=0.0,
+            derivative_gain=1.2,
+            output_minimum=-5.0,
+            output_maximum=5.0,
+            integral_minimum=-0.5,
+            integral_maximum=0.5,
+        )
+    )
+
+    def ideal_pid_callback(
+        _current_time: float,
+        state: BeamState,
+    ) -> float:
+        return ideal_controller.update(
+            reference=0.0,
+            measurement=state.displacement,
+            time_step=config.time_step,
+        )
+
+    ideal_pid_result = run_simulation(
+        beam=SingleDegreeBeam(
+            parameters=beam_parameters,
+        ),
+        config=config,
+        disturbance=disturbance,
+        controller=ideal_pid_callback,
+    )
+
+    (
+        observer_pid_result,
+        estimated_displacement,
+        estimated_velocity,
+        valid_measurements,
+        estimated_sensor_bias,
+    ) = run_observer_pid_simulation(
+        beam_parameters=beam_parameters,
+        config=config,
+        disturbance=disturbance,
+    )
+
+    evaluation_mask = open_loop_result.time >= 0.50
+
+    open_loop_rms = calculate_rms(open_loop_result.displacement[evaluation_mask])
+
+    ideal_pid_rms = calculate_rms(ideal_pid_result.displacement[evaluation_mask])
+
+    observer_pid_rms = calculate_rms(observer_pid_result.displacement[evaluation_mask])
+
+    ideal_suppression = (open_loop_rms - ideal_pid_rms) / open_loop_rms * 100.0
+
+    observer_suppression = (open_loop_rms - observer_pid_rms) / open_loop_rms * 100.0
+
+    observer_performance_penalty = (observer_pid_rms - ideal_pid_rms) / ideal_pid_rms * 100.0
+
+    estimation_rmse = calculate_rms(
+        (estimated_displacement - observer_pid_result.displacement)[evaluation_mask]
+    )
+
+    maximum_observer_control = float(np.max(np.abs(observer_pid_result.control_force)))
+
+    dropout_count = int(np.count_nonzero(~valid_measurements))
+
+    open_loop_result.to_dataframe().to_csv(
+        open_loop_data_path,
+        index=False,
+    )
+
+    ideal_pid_result.to_dataframe().to_csv(
+        ideal_pid_data_path,
+        index=False,
+    )
+
+    observer_table = observer_pid_result.to_dataframe()
+
+    observer_table["estimated_displacement_m"] = estimated_displacement
+
+    observer_table["estimated_velocity_m_s"] = estimated_velocity
+
+    observer_table["measurement_valid"] = valid_measurements
+
+    observer_table.to_csv(
+        observer_pid_data_path,
+        index=False,
+    )
+
+    plot_observer_pid_comparison(
+        open_loop_result=open_loop_result,
+        ideal_pid_result=ideal_pid_result,
+        observer_pid_result=observer_pid_result,
+        estimated_displacement=estimated_displacement,
+        estimated_velocity=estimated_velocity,
+        output_path=figure_path,
+    )
+
+    print("Observer-based PID experiment completed")
+    print(f"Estimated sensor bias:        {estimated_sensor_bias * 1000.0:.4f} mm")
+    print(f"Open-loop RMS:                {open_loop_rms * 1000.0:.4f} mm")
+    print(f"Ideal PID RMS:                {ideal_pid_rms * 1000.0:.4f} mm")
+    print(f"Observer PID RMS:             {observer_pid_rms * 1000.0:.4f} mm")
+    print(f"Ideal PID suppression:        {ideal_suppression:.2f}%")
+    print(f"Observer PID suppression:     {observer_suppression:.2f}%")
+    print(f"Observer performance penalty: {observer_performance_penalty:.2f}%")
+    print(f"Observer displacement RMSE:   {estimation_rmse * 1000.0:.4f} mm")
+    print(f"Maximum observer control:     {maximum_observer_control:.4f} N")
+    print(f"Dropped measurements:         {dropout_count}")
+    print(f"Output figure:                {figure_path}")
+
+
+if __name__ == "__main__":
+    main()
+"""柔性梁固定步长仿真运行器�?""
+
+from collections.abc import Callable
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+from numpy.typing import NDArray
+
+from plant.beam_sdof import BeamState, SingleDegreeBeam
+from simulation.config import SimulationConfig
+
+DisturbanceFunction = Callable[[float], float]
+ControllerFunction = Callable[[float, BeamState], float]
+
+
+@dataclass(slots=True)
+class SimulationResult:
+    """单次柔性梁仿真实验结果�?""
+
+    time: NDArray[np.float64]
+    displacement: NDArray[np.float64]
+    velocity: NDArray[np.float64]
+    acceleration: NDArray[np.float64]
+    control_force: NDArray[np.float64]
+    disturbance_force: NDArray[np.float64]
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """转换为便于保存和分析的数据表�?""
+
+        return pd.DataFrame(
+            {
+                "time_s": self.time,
+                "displacement_m": self.displacement,
+                "velocity_m_s": self.velocity,
+                "acceleration_m_s2": self.acceleration,
+                "control_force_n": self.control_force,
+                "disturbance_force_n": self.disturbance_force,
+            }
+        )
+
+
+def run_simulation(
+    beam: SingleDegreeBeam,
+    config: SimulationConfig,
+    disturbance: DisturbanceFunction | None = None,
+    controller: ControllerFunction | None = None,
+) -> SimulationResult:
+    """运行固定步长柔性梁仿真�?""
+
+    sample_count = int(round(config.duration / config.time_step)) + 1
+
+    time_values = np.arange(sample_count, dtype=np.float64) * config.time_step
+    displacement_values = np.zeros(sample_count, dtype=np.float64)
+    velocity_values = np.zeros(sample_count, dtype=np.float64)
+    acceleration_values = np.zeros(sample_count, dtype=np.float64)
+    control_values = np.zeros(sample_count, dtype=np.float64)
+    disturbance_values = np.zeros(sample_count, dtype=np.float64)
+
+    for sample_index, current_time in enumerate(time_values):
+        state = BeamState(
+            displacement=beam.state.displacement,
+            velocity=beam.state.velocity,
+        )
+
+        disturbance_force = disturbance(float(current_time)) if disturbance else 0.0
+        control_force = controller(float(current_time), state) if controller else 0.0
+
+        displacement_values[sample_index] = state.displacement
+        velocity_values[sample_index] = state.velocity
+        control_values[sample_index] = control_force
+        disturbance_values[sample_index] = disturbance_force
+        acceleration_values[sample_index] = beam.acceleration(
+            state=state,
+            control_force=control_force,
+            disturbance_force=disturbance_force,
+        )
+
+        if sample_index < sample_count - 1:
+            beam.step(
+                time_step=config.time_step,
+                control_force=control_force,
+                disturbance_force=disturbance_force,
+            )
+
+    return SimulationResult(
+        time=time_values,
+        displacement=displacement_values,
+        velocity=velocity_values,
+        acceleration=acceleration_values,
+        control_force=control_values,
+        disturbance_force=disturbance_values,
+    )
+
+
+def run_open_loop_simulation(
+    beam: SingleDegreeBeam,
+    config: SimulationConfig,
+    disturbance: DisturbanceFunction | None = None,
+) -> SimulationResult:
+    """运行无控制器的开环仿真�?""
+
+    return run_simulation(
+        beam=beam,
+        config=config,
+        disturbance=disturbance,
+        controller=None,
+    )
+"""仿真参数配置�?""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class SimulationConfig:
+    """固定步长仿真配置�?""
+
+    time_step: float = 0.001
+    duration: float = 5.0
+
+    def __post_init__(self) -> None:
+        if self.time_step <= 0:
+            raise ValueError("time_step must be greater than zero")
+
+        if self.duration <= 0:
+            raise ValueError("duration must be greater than zero")
+
+        if self.time_step > self.duration:
+            raise ValueError("time_step must not be greater than duration")
+"""可移植PID控制器�?""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class PIDParameters:
+    """PID控制器参数�?""
+
+    proportional_gain: float
+    integral_gain: float
+    derivative_gain: float
+    output_minimum: float = -5.0
+    output_maximum: float = 5.0
+    integral_minimum: float = -1.0
+    integral_maximum: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.output_minimum >= self.output_maximum:
+            raise ValueError("output_minimum must be smaller than output_maximum")
+
+        if self.integral_minimum >= self.integral_maximum:
+            raise ValueError("integral_minimum must be smaller than integral_maximum")
+
+
+class PIDController:
+    """带输出限幅和抗积分饱和的PID控制器�?""
+
+    def __init__(self, parameters: PIDParameters) -> None:
+        self.parameters = parameters
+        self.integral = 0.0
+        self.previous_error = 0.0
+        self.initialized = False
+
+    @staticmethod
+    def _clamp(value: float, minimum: float, maximum: float) -> float:
+        return max(minimum, min(value, maximum))
+
+    def update(
+        self,
+        reference: float,
+        measurement: float,
+        time_step: float,
+    ) -> float:
+        """计算一个控制周期的输出�?""
+
+        if time_step <= 0:
+            raise ValueError("time_step must be greater than zero")
+
+        error = reference - measurement
+
+        derivative = 0.0
+        if self.initialized:
+            derivative = (error - self.previous_error) / time_step
+
+        candidate_integral = self._clamp(
+            self.integral + error * time_step,
+            self.parameters.integral_minimum,
+            self.parameters.integral_maximum,
+        )
+
+        candidate_output = (
+            self.parameters.proportional_gain * error
+            + self.parameters.integral_gain * candidate_integral
+            + self.parameters.derivative_gain * derivative
+        )
+
+        limited_output = self._clamp(
+            candidate_output,
+            self.parameters.output_minimum,
+            self.parameters.output_maximum,
+        )
+
+        output_is_saturated = limited_output != candidate_output
+        error_drives_positive_saturation = (
+            limited_output >= self.parameters.output_maximum and error > 0
+        )
+        error_drives_negative_saturation = (
+            limited_output <= self.parameters.output_minimum and error < 0
+        )
+
+        if not output_is_saturated or not (
+            error_drives_positive_saturation or error_drives_negative_saturation
+        ):
+            self.integral = candidate_integral
+
+        output = (
+            self.parameters.proportional_gain * error
+            + self.parameters.integral_gain * self.integral
+            + self.parameters.derivative_gain * derivative
+        )
+
+        self.previous_error = error
+        self.initialized = True
+
+        return self._clamp(
+            output,
+            self.parameters.output_minimum,
+            self.parameters.output_maximum,
+        )
+
+    def reset(self) -> None:
+        """清除控制器内部状态�?""
+
+        self.integral = 0.0
+        self.previous_error = 0.0
+        self.initialized = False
+"""柔性梁Luenberger状态观测器�?""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class ObserverParameters:
+    """状态观测器参数�?""
+
+    mass: float = 0.08
+    damping: float = 0.12
+    stiffness: float = 18.0
+    position_gain: float = 58.5
+    velocity_gain: float = 562.25
+
+    def __post_init__(self) -> None:
+        if self.mass <= 0:
+            raise ValueError("mass must be greater than zero")
+
+        if self.damping < 0:
+            raise ValueError("damping must not be negative")
+
+        if self.stiffness <= 0:
+            raise ValueError("stiffness must be greater than zero")
+
+        if self.position_gain <= 0:
+            raise ValueError("position_gain must be greater than zero")
+
+        if self.velocity_gain <= 0:
+            raise ValueError("velocity_gain must be greater than zero")
+
+
+@dataclass(slots=True)
+class ObserverState:
+    """状态观测器估计结果�?""
+
+    displacement: float = 0.0
+    velocity: float = 0.0
+
+
+class LuenbergerObserver:
+    """根据位移测量估计柔性梁位移和速度�?""
+
+    def __init__(
+        self,
+        parameters: ObserverParameters | None = None,
+        initial_state: ObserverState | None = None,
+    ) -> None:
+        self.parameters = parameters or ObserverParameters()
+
+        initial = initial_state or ObserverState()
+
+        self.state = ObserverState(
+            displacement=initial.displacement,
+            velocity=initial.velocity,
+        )
+
+        self.last_innovation = 0.0
+
+    def update(
+        self,
+        measured_displacement: float,
+        applied_control_force: float,
+        time_step: float,
+        measurement_valid: bool = True,
+    ) -> ObserverState:
+        """推进一个观测器周期�?""
+
+        if time_step <= 0:
+            raise ValueError("time_step must be greater than zero")
+
+        estimated_displacement = self.state.displacement
+        estimated_velocity = self.state.velocity
+
+        if measurement_valid:
+            innovation = measured_displacement - estimated_displacement
+        else:
+            innovation = 0.0
+
+        predicted_acceleration = (
+            applied_control_force
+            - self.parameters.damping * estimated_velocity
+            - self.parameters.stiffness * estimated_displacement
+        ) / self.parameters.mass
+
+        displacement_derivative = estimated_velocity + self.parameters.position_gain * innovation
+
+        velocity_derivative = predicted_acceleration + self.parameters.velocity_gain * innovation
+
+        self.state.displacement = estimated_displacement + time_step * displacement_derivative
+
+        self.state.velocity = estimated_velocity + time_step * velocity_derivative
+
+        self.last_innovation = innovation
+
+        return ObserverState(
+            displacement=self.state.displacement,
+            velocity=self.state.velocity,
+        )
+
+    def reset(
+        self,
+        state: ObserverState | None = None,
+    ) -> None:
+        """复位观测器状态�?""
+
+        new_state = state or ObserverState()
+
+        self.state = ObserverState(
+            displacement=new_state.displacement,
+            velocity=new_state.velocity,
+        )
+
+        self.last_innovation = 0.0
+"""柔性梁实验结果可视化�?""
+
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+from numpy.typing import NDArray
+
+from simulation.runner import SimulationResult
+
+
+def plot_free_vibration_response(
+    result: SimulationResult,
+    output_path: str | Path,
+) -> None:
+    """绘制冲击扰动及柔性梁自由振动响应�?""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    figure, axes = plt.subplots(
+        nrows=2,
+        ncols=1,
+        figsize=(11, 7),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        result.time,
+        result.displacement * 1000.0,
+        color="#2563EB",
+        linewidth=1.5,
+        label="Beam-tip displacement",
+    )
+    axes[0].axhline(0.0, color="#64748B", linewidth=0.8)
+    axes[0].set_ylabel("Displacement (mm)")
+    axes[0].set_title("Flexible Beam Free-Vibration Response")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        result.time,
+        result.disturbance_force,
+        color="#DC2626",
+        linewidth=1.5,
+        label="External disturbance",
+    )
+    axes[1].set_xlabel("Time (s)")
+    axes[1].set_ylabel("Force (N)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
+
+
+def plot_pid_comparison(
+    open_loop_result: SimulationResult,
+    controlled_result: SimulationResult,
+    output_path: str | Path,
+) -> None:
+    """绘制无控制与PID控制的响应对比�?""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    figure, axes = plt.subplots(
+        nrows=3,
+        ncols=1,
+        figsize=(11, 9),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        open_loop_result.time,
+        open_loop_result.displacement * 1000.0,
+        color="#DC2626",
+        linewidth=1.4,
+        label="Without control",
+    )
+
+    axes[0].plot(
+        controlled_result.time,
+        controlled_result.displacement * 1000.0,
+        color="#2563EB",
+        linewidth=1.4,
+        label="PID control",
+    )
+
+    axes[0].set_ylabel("Displacement (mm)")
+    axes[0].set_title("Flexible Beam Vibration Control Comparison")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        controlled_result.time,
+        controlled_result.control_force,
+        color="#16A34A",
+        linewidth=1.2,
+        label="PID control force",
+    )
+    axes[1].set_ylabel("Control force (N)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    axes[2].plot(
+        controlled_result.time,
+        controlled_result.disturbance_force,
+        color="#9333EA",
+        linewidth=1.2,
+        label="External disturbance",
+    )
+    axes[2].set_xlabel("Time (s)")
+    axes[2].set_ylabel("Disturbance (N)")
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
+
+
+def plot_imu_measurement_comparison(
+    time: NDArray[np.float64],
+    true_acceleration: NDArray[np.float64],
+    measured_acceleration: NDArray[np.float64],
+    valid_samples: NDArray[np.bool_],
+    output_path: str | Path,
+) -> None:
+    """绘制真实加速度与虚拟IMU测量值对比�?""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    measurement_error = measured_acceleration - true_acceleration
+
+    figure, axes = plt.subplots(
+        nrows=2,
+        ncols=1,
+        figsize=(11, 7),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        time,
+        true_acceleration,
+        color="#1D4ED8",
+        linewidth=1.4,
+        label="True acceleration",
+    )
+
+    axes[0].plot(
+        time,
+        measured_acceleration,
+        color="#F97316",
+        linewidth=0.9,
+        alpha=0.75,
+        label="Virtual IMU measurement",
+    )
+
+    invalid_indices = ~valid_samples
+
+    if np.any(invalid_indices):
+        axes[0].scatter(
+            time[invalid_indices],
+            measured_acceleration[invalid_indices],
+            color="#DC2626",
+            marker="x",
+            s=18,
+            label="Dropped sample",
+        )
+
+    axes[0].set_ylabel("Acceleration (m/s²)")
+    axes[0].set_title("Virtual IMU Measurement Validation")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        time,
+        measurement_error,
+        color="#7C3AED",
+        linewidth=0.9,
+        label="Measurement error",
+    )
+
+    axes[1].axhline(
+        0.0,
+        color="#64748B",
+        linewidth=0.8,
+    )
+
+    axes[1].set_xlabel("Time (s)")
+    axes[1].set_ylabel("Error (m/s²)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
+
+
+def plot_imu_processing_comparison(
+    time: NDArray[np.float64],
+    true_acceleration: NDArray[np.float64],
+    raw_acceleration: NDArray[np.float64],
+    processed_acceleration: NDArray[np.float64],
+    valid_samples: NDArray[np.bool_],
+    sensor_faults: NDArray[np.bool_],
+    output_path: str | Path,
+) -> None:
+    """绘制IMU原始测量与预处理结果�?""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    raw_error = raw_acceleration - true_acceleration
+    processed_error = processed_acceleration - true_acceleration
+
+    figure, axes = plt.subplots(
+        nrows=3,
+        ncols=1,
+        figsize=(12, 10),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        time,
+        true_acceleration,
+        color="#1D4ED8",
+        linewidth=1.5,
+        label="True acceleration",
+    )
+
+    axes[0].plot(
+        time,
+        raw_acceleration,
+        color="#F97316",
+        linewidth=0.8,
+        alpha=0.55,
+        label="Raw IMU",
+    )
+
+    axes[0].plot(
+        time,
+        processed_acceleration,
+        color="#16A34A",
+        linewidth=1.2,
+        label="Processed IMU",
+    )
+
+    axes[0].set_ylabel("Acceleration (m/s²)")
+    axes[0].set_title("Virtual IMU Processing and Fault Detection")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        time,
+        raw_error,
+        color="#F97316",
+        linewidth=0.8,
+        alpha=0.7,
+        label="Raw measurement error",
+    )
+
+    axes[1].plot(
+        time,
+        processed_error,
+        color="#7C3AED",
+        linewidth=1.0,
+        label="Processed measurement error",
+    )
+
+    axes[1].axhline(
+        0.0,
+        color="#64748B",
+        linewidth=0.8,
+    )
+
+    axes[1].set_ylabel("Error (m/s²)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    invalid_samples = ~valid_samples
+
+    axes[2].step(
+        time,
+        invalid_samples.astype(float),
+        where="post",
+        color="#DC2626",
+        linewidth=1.2,
+        label="Invalid input",
+    )
+
+    axes[2].step(
+        time,
+        sensor_faults.astype(float),
+        where="post",
+        color="#7C3AED",
+        linewidth=1.5,
+        label="Sensor fault",
+    )
+
+    axes[2].set_xlabel("Time (s)")
+    axes[2].set_ylabel("Fault state")
+    axes[2].set_yticks([0.0, 1.0])
+    axes[2].set_yticklabels(["Normal", "Active"])
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
+
+
+def plot_state_observer_validation(
+    time: NDArray[np.float64],
+    true_displacement: NDArray[np.float64],
+    estimated_displacement: NDArray[np.float64],
+    true_velocity: NDArray[np.float64],
+    estimated_velocity: NDArray[np.float64],
+    valid_measurements: NDArray[np.bool_],
+    output_path: str | Path,
+) -> None:
+    """绘制状态观测器估计结果�?""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    displacement_error = estimated_displacement - true_displacement
+
+    velocity_error = estimated_velocity - true_velocity
+
+    figure, axes = plt.subplots(
+        nrows=3,
+        ncols=1,
+        figsize=(12, 10),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        time,
+        true_displacement * 1000.0,
+        color="#1D4ED8",
+        linewidth=1.5,
+        label="True displacement",
+    )
+
+    axes[0].plot(
+        time,
+        estimated_displacement * 1000.0,
+        color="#F97316",
+        linewidth=1.1,
+        linestyle="--",
+        label="Estimated displacement",
+    )
+
+    axes[0].set_ylabel("Displacement (mm)")
+    axes[0].set_title("Luenberger Observer Validation")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        time,
+        true_velocity,
+        color="#16A34A",
+        linewidth=1.5,
+        label="True velocity",
+    )
+
+    axes[1].plot(
+        time,
+        estimated_velocity,
+        color="#7C3AED",
+        linewidth=1.1,
+        linestyle="--",
+        label="Estimated velocity",
+    )
+
+    axes[1].set_ylabel("Velocity (m/s)")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    axes[2].plot(
+        time,
+        displacement_error * 1000.0,
+        color="#DC2626",
+        linewidth=1.0,
+        label="Displacement error",
+    )
+
+    axes[2].plot(
+        time,
+        velocity_error,
+        color="#0891B2",
+        linewidth=1.0,
+        label="Velocity error",
+    )
+
+    invalid_indices = ~valid_measurements
+
+    if np.any(invalid_indices):
+        axes[2].scatter(
+            time[invalid_indices],
+            np.zeros(np.count_nonzero(invalid_indices)),
+            color="#111827",
+            marker="x",
+            s=16,
+            label="Dropped measurement",
+        )
+
+    axes[2].set_xlabel("Time (s)")
+    axes[2].set_ylabel("Estimation error")
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
+
+
+def plot_observer_pid_comparison(
+    open_loop_result: SimulationResult,
+    ideal_pid_result: SimulationResult,
+    observer_pid_result: SimulationResult,
+    estimated_displacement: NDArray[np.float64],
+    estimated_velocity: NDArray[np.float64],
+    output_path: str | Path,
+) -> None:
+    """绘制无控制、理想PID及观测器PID对比�?""
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    figure, axes = plt.subplots(
+        nrows=3,
+        ncols=1,
+        figsize=(12, 10),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(
+        open_loop_result.time,
+        open_loop_result.displacement * 1000.0,
+        color="#DC2626",
+        linewidth=1.2,
+        label="Without control",
+    )
+
+    axes[0].plot(
+        ideal_pid_result.time,
+        ideal_pid_result.displacement * 1000.0,
+        color="#2563EB",
+        linewidth=1.3,
+        label="Ideal-state PID",
+    )
+
+    axes[0].plot(
+        observer_pid_result.time,
+        observer_pid_result.displacement * 1000.0,
+        color="#16A34A",
+        linewidth=1.3,
+        label="Observer-based PID",
+    )
+
+    axes[0].set_ylabel("Displacement (mm)")
+    axes[0].set_title("Ideal-State and Observer-Based PID Comparison")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend()
+
+    axes[1].plot(
+        observer_pid_result.time,
+        observer_pid_result.displacement * 1000.0,
+        color="#1D4ED8",
+        linewidth=1.4,
+        label="True displacement",
+    )
+
+    axes[1].plot(
+        observer_pid_result.time,
+        estimated_displacement * 1000.0,
+        color="#F97316",
+        linewidth=1.1,
+        linestyle="--",
+        label="Estimated displacement",
+    )
+
+    axes[1].plot(
+        observer_pid_result.time,
+        estimated_velocity,
+        color="#7C3AED",
+        linewidth=0.9,
+        alpha=0.8,
+        label="Estimated velocity",
+    )
+
+    axes[1].set_ylabel("Estimated state")
+    axes[1].grid(alpha=0.25)
+    axes[1].legend()
+
+    axes[2].plot(
+        ideal_pid_result.time,
+        ideal_pid_result.control_force,
+        color="#2563EB",
+        linewidth=1.2,
+        label="Ideal PID force",
+    )
+
+    axes[2].plot(
+        observer_pid_result.time,
+        observer_pid_result.control_force,
+        color="#16A34A",
+        linewidth=1.2,
+        label="Observer PID force",
+    )
+
+    axes[2].plot(
+        observer_pid_result.time,
+        observer_pid_result.disturbance_force,
+        color="#9333EA",
+        linewidth=1.0,
+        label="External disturbance",
+    )
+
+    axes[2].set_xlabel("Time (s)")
+    axes[2].set_ylabel("Force (N)")
+    axes[2].grid(alpha=0.25)
+    axes[2].legend()
+
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
