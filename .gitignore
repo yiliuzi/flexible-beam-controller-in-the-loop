@@ -1,37 +1,53 @@
-# Python virtual environment
+# Python virtual environments
 .venv/
+venv/
+env/
 
 # Python cache
 __pycache__/
 *.py[cod]
+*$py.class
+
+# Test and tool cache
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 .coverage
+.coverage.*
 htmlcov/
 
-# PyCharm
-.idea/
+# Generated coverage reports
+reports/coverage/
+reports/coverage.xml
 
-# C/C++ build files
+# Build artifacts
 build/
-*.dll
-*.exe
-*.o
-*.obj
-*.a
-*.lib
+dist/
+*.egg-info/
+.eggs/
 
-# Generated experimental data
-data/*.csv
-data/*.npy
-results/*.csv
-results/*.png
-results/*.pdf
+# IDE configuration
+.idea/
+.vscode/
+*.iml
 
-# Keep directories in Git
-!data/.gitkeep
-!results/.gitkeep
+# Jupyter
+.ipynb_checkpoints/
 
-# Operating system
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Operating system files
 .DS_Store
 Thumbs.db
+desktop.ini
