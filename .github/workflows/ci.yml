@@ -1,0 +1,116 @@
+name: Project Quality Gate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gate:
+    name: Lint, Test and Run Experiments
+    runs-on: ubuntu-latest
+
+    env:
+      MPLBACKEND: Agg
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install project dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run Ruff static analysis
+        run: python -m ruff check .
+
+      - name: Verify Ruff formatting
+        run: python -m ruff format --check .
+
+      - name: Run automated tests with coverage
+        run: |
+          python -m pytest -v \
+            --cov=actuators \
+            --cov=communication \
+            --cov=controllers \
+            --cov=embedded \
+            --cov=plant \
+            --cov=safety \
+            --cov=sensors \
+            --cov=simulation \
+            --cov-report=term-missing \
+            --cov-report=xml:reports/coverage.xml \
+            --cov-report=html:reports/coverage \
+            --cov-fail-under=90
+
+      - name: Run embedded timing experiment
+        run: python -m experiments.embedded_timing_control
+
+      - name: Run CAN fault safety experiment
+        run: python -m experiments.can_fault_control
+
+      - name: Verify generated artifacts
+        shell: python
+        run: |
+          from pathlib import Path
+
+          required_files = [
+              Path("data/embedded_timing_response.csv"),
+              Path("data/healthy_can_control.csv"),
+              Path("data/faulty_can_control.csv"),
+              Path("results/embedded_timing_comparison.png"),
+              Path("results/can_fault_control_comparison.png"),
+              Path("results/safety_state_timeline.png"),
+              Path("reports/coverage/index.html"),
+          ]
+
+          missing_files = [
+              str(path)
+              for path in required_files
+              if not path.is_file()
+          ]
+
+          if missing_files:
+              formatted = "\n".join(missing_files)
+              raise SystemExit(
+                  "Missing generated artifacts:\n"
+                  + formatted
+              )
+
+          print("All generated artifacts were verified.")
+
+      - name: Upload experiment results
+        uses: actions/upload-artifact@v4
+        with:
+          name: experiment-results
+          path: |
+            results/*.png
+            data/*.csv
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            reports/coverage/
+            reports/coverage.xml
+          if-no-files-found: error
+          retention-days: 14
