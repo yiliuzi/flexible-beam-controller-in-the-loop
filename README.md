@@ -1,4 +1,11 @@
 # Flexible Beam Controller-in-the-Loop Platform
+[![Project Quality Gate](https://github.com/yiliuzi/flexible-beam-controller-in-the-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/yiliuzi/flexible-beam-controller-in-the-loop/actions/workflows/ci.yml)
+![Coverage](https://img.shields.io/badge/coverage-95%25-brightgreen)
+![Python](https://img.shields.io/badge/python-3.13-blue)
+![Platform](https://img.shields.io/badge/platform-hardware--free-orange)
+
+
+
 
 一个无需真实硬件即可运行的柔性梁嵌入式控制器在环仿真平台。
 
